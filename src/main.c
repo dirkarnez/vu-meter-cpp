@@ -1,254 +1,203 @@
-/** @file pa_devs.c
-    @ingroup examples_src
-    @brief List available devices, including device information.
-    @author Phil Burk http://www.softsynth.com
-
-    @note Define PA_USE_ASIO=0 to compile this code on Windows without
-        ASIO support.
-*/
-/*
- * $Id$
- *
- * This program uses the PortAudio Portable Audio Library.
- * For more information see: http://www.portaudio.com
- * Copyright (c) 1999-2000 Ross Bencina and Phil Burk
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
- * CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
-/*
- * The text above constitutes the entire PortAudio license; however,
- * the PortAudio community also makes the following non-binding requests:
- *
- * Any person wishing to distribute modifications to the Software is
- * requested to send the modifications to the original developer so that
- * they can be incorporated into the canonical version. It is also
- * requested that these non-binding requests be included along with the
- * license above.
- */
-
+#include <strings.h>
+#include <stdlib.h>
 #include <stdio.h>
-#include <math.h>
-#include "portaudio.h"
+#include <portaudio.h>
+#include "vu-meter.h"
 
-#ifdef WIN32
-#include <windows.h>
-
-#if PA_USE_ASIO
-#include "pa_asio.h"
-#endif
-#endif
-
-/*******************************************************************/
-static void PrintSupportedStandardSampleRates(
-        const PaStreamParameters *inputParameters,
-        const PaStreamParameters *outputParameters )
-{
-    static double standardSampleRates[] = {
-        8000.0, 9600.0, 11025.0, 12000.0, 16000.0, 22050.0, 24000.0, 32000.0,
-        44100.0, 48000.0, 88200.0, 96000.0, 192000.0, -1 /* negative terminated  list */
-    };
-    int     i, printCount;
-    PaError err;
-
-    printCount = 0;
-    for( i=0; standardSampleRates[i] > 0; i++ )
-    {
-        err = Pa_IsFormatSupported( inputParameters, outputParameters, standardSampleRates[i] );
-        if( err == paFormatIsSupported )
-        {
-            if( printCount == 0 )
-            {
-                printf( "\t%8.2f", standardSampleRates[i] );
-                printCount = 1;
-            }
-            else if( printCount == 4 )
-            {
-                printf( ",\n\t%8.2f", standardSampleRates[i] );
-                printCount = 1;
-            }
-            else
-            {
-                printf( ", %8.2f", standardSampleRates[i] );
-                ++printCount;
-            }
-        }
-    }
-    if( !printCount )
-        printf( "None\n" );
-    else
-        printf( "\n" );
+void usage(char* argv0) {
+    fprintf(stderr, "%s -l\n", argv0);
+    fprintf(stderr, "%s -r -i <input device index>\n", argv0);
 }
 
-/*******************************************************************/
-int main(void);
-int main(void)
-{
-    int     i, numDevices, defaultDisplayed;
-    const   PaDeviceInfo *deviceInfo;
-    PaStreamParameters inputParameters, outputParameters;
+void init_pa_or_die() {
+    /* -- initialize PortAudio -- */
+    PaError err = Pa_Initialize();
+    if( err != paNoError ) {
+        fprintf(stderr, "Unable to initialize PortAudio: %s\n", Pa_GetErrorText(err));
+        exit(1);
+    }
+}
+
+void terminate_pa() {
+    Pa_Terminate();
+}
+
+int list() {
+    init_pa_or_die();
+
+    PaDeviceIndex count = Pa_GetDeviceCount();
+    printf("Device count: %d\n", count);
+    printf("\n");
+
+    for(PaDeviceIndex i = 0; i < count; i++) {
+        const PaDeviceInfo * info = Pa_GetDeviceInfo(i);
+
+        printf("#%d: %s\n", i, info->name);
+        printf(" Default sample rate: %d\n", info->defaultSampleRate);
+    }
+    printf("\n");
+
+    printf("Defaults\n");
+    printf(" Input device: %d\n", Pa_GetDefaultInputDevice());
+    printf(" Output device: %d\n", Pa_GetDefaultOutputDevice());
+
+    terminate_pa();
+    return 0;
+}
+
+int run() {
+    init_pa_or_die();
+
     PaError err;
 
+    PaStreamParameters inputParameters;
+    PaStream *stream;
+    int NUM_CHANNELS = 1;
+    double SAMPLE_RATE = 44100;
+    double time_per_buffer = 0.2;
+    // int FRAMES_PER_BUFFER = time_per_buffer * SAMPLE_RATE;
+    int FRAMES_PER_BUFFER = 100;
+    PaSampleFormat PA_SAMPLE_TYPE = paFloat32;
 
-    err = Pa_Initialize();
-    if( err != paNoError )
-    {
-        printf( "ERROR: Pa_Initialize returned 0x%x\n", err );
-        goto error;
+    float sampleBlock[FRAMES_PER_BUFFER];
+
+    /* -- setup input and output -- */
+    memset( &inputParameters, 0, sizeof( inputParameters ) );
+    inputParameters.device = Pa_GetDefaultInputDevice(); /* default input device */
+    inputParameters.channelCount = NUM_CHANNELS;
+    inputParameters.sampleFormat = PA_SAMPLE_TYPE;
+    inputParameters.suggestedLatency = Pa_GetDeviceInfo( inputParameters.device )->defaultHighInputLatency ;
+    inputParameters.hostApiSpecificStreamInfo = NULL;
+
+    /*
+    bzero( &outputParameters, sizeof( outputParameters ) );
+    outputParameters.device = Pa_GetDefaultOutputDevice(); // default output device
+    outputParameters.channelCount = NUM_CHANNELS;
+    outputParameters.sampleFormat = PA_SAMPLE_TYPE;
+    outputParameters.suggestedLatency = Pa_GetDeviceInfo( outputParameters.device )->defaultHighOutputLatency;
+    outputParameters.hostApiSpecificStreamInfo = NULL;
+    */
+
+    printf("Input\n");
+    printf("  device: %s (%d)\n", Pa_GetDeviceInfo(inputParameters.device)->name , inputParameters.device);
+    printf("  # channels: %d\n", inputParameters.channelCount);
+
+    /* -- setup stream -- */
+    err = Pa_OpenStream(
+        &stream,
+        &inputParameters,
+        NULL, // &outputParameters,
+        SAMPLE_RATE,
+        0,
+        paClipOff,      /* we won't output out of range samples so don't bother clipping them */
+        NULL, /* no callback, use blocking API */
+        NULL ); /* no callback, so no callback userData */
+    if( err != paNoError ) {
+        fprintf(stderr, "Unable to open stream: %s\n", Pa_GetErrorText(err));
+        return 1;
     }
 
-    printf( "PortAudio version: 0x%08X\n", Pa_GetVersion());
-    printf( "Version text: '%s'\n", Pa_GetVersionInfo()->versionText );
+    /* -- start stream -- */
+    err = Pa_StartStream( stream );
+    if( err != paNoError ) {
+        fprintf(stderr, "Unable to start stream: %s\n", Pa_GetErrorText(err));
+        return 1;
+    }
+    printf("Wire on. Will run one minute.\n"); fflush(stdout);
 
-    numDevices = Pa_GetDeviceCount();
-    if( numDevices < 0 )
+    printf("FRAMES_PER_BUFFER=%d\n", FRAMES_PER_BUFFER);
+
+    /* -- Here's the loop where we pass data from input to output -- */
+    for( int i=0; i<(60*SAMPLE_RATE)/FRAMES_PER_BUFFER; ++i )
     {
-        printf( "ERROR: Pa_GetDeviceCount returned 0x%x\n", numDevices );
-        err = numDevices;
-        goto error;
+        const char *read_error = "", *write_error = "";
+
+        err = Pa_ReadStream( stream, sampleBlock, FRAMES_PER_BUFFER );
+        read_error = Pa_GetErrorText(err);
+        /*
+        if( err != paNoError ) {
+            fprintf(stderr, "Error reading stream: %s\n", Pa_GetErrorText(err));
+            break;
+        }
+        */
+
+        vu_meter_on_sample(inputParameters.channelCount, FRAMES_PER_BUFFER, (float *)sampleBlock);
+
+        // return 0;
+
+        /*
+        printf("writing..\n");
+        err = Pa_WriteStream( stream, sampleBlock, FRAMES_PER_BUFFER );
+        //if( err ) goto xrun;
+        write_error = Pa_GetErrorText(err);
+        */
+    }
+    /* -- Now we stop the stream -- */
+    err = Pa_StopStream( stream );
+    if( err != paNoError ) {
+        fprintf(stderr, "Error stopping stream: %s\n", Pa_GetErrorText(err));
     }
 
-    printf( "Number of devices = %d\n", numDevices );
-    for( i=0; i<numDevices; i++ )
-    {
-        deviceInfo = Pa_GetDeviceInfo( i );
-        printf( "--------------------------------------- device #%d\n", i );
-
-    /* Mark global and API specific default devices */
-        defaultDisplayed = 0;
-        if( i == Pa_GetDefaultInputDevice() )
-        {
-            printf( "[ Default Input" );
-            defaultDisplayed = 1;
-        }
-        else if( i == Pa_GetHostApiInfo( deviceInfo->hostApi )->defaultInputDevice )
-        {
-            const PaHostApiInfo *hostInfo = Pa_GetHostApiInfo( deviceInfo->hostApi );
-            printf( "[ Default %s Input", hostInfo->name );
-            defaultDisplayed = 1;
-        }
-
-        if( i == Pa_GetDefaultOutputDevice() )
-        {
-            printf( (defaultDisplayed ? "," : "[") );
-            printf( " Default Output" );
-            defaultDisplayed = 1;
-        }
-        else if( i == Pa_GetHostApiInfo( deviceInfo->hostApi )->defaultOutputDevice )
-        {
-            const PaHostApiInfo *hostInfo = Pa_GetHostApiInfo( deviceInfo->hostApi );
-            printf( (defaultDisplayed ? "," : "[") );
-            printf( " Default %s Output", hostInfo->name );
-            defaultDisplayed = 1;
-        }
-
-        if( defaultDisplayed )
-            printf( " ]\n" );
-
-    /* print device info fields */
-#ifdef WIN32
-        {   /* Use wide char on windows, so we can show UTF-8 encoded device names */
-            wchar_t wideName[MAX_PATH];
-            MultiByteToWideChar(CP_UTF8, 0, deviceInfo->name, -1, wideName, MAX_PATH-1);
-            wprintf( L"Name                        = %s\n", wideName );
-        }
-#else
-        printf( "Name                        = %s\n", deviceInfo->name );
-#endif
-        printf( "Host API                    = %s\n",  Pa_GetHostApiInfo( deviceInfo->hostApi )->name );
-        printf( "Max inputs = %d", deviceInfo->maxInputChannels  );
-        printf( ", Max outputs = %d\n", deviceInfo->maxOutputChannels  );
-
-        printf( "Default low input latency   = %8.4f\n", deviceInfo->defaultLowInputLatency  );
-        printf( "Default low output latency  = %8.4f\n", deviceInfo->defaultLowOutputLatency  );
-        printf( "Default high input latency  = %8.4f\n", deviceInfo->defaultHighInputLatency  );
-        printf( "Default high output latency = %8.4f\n", deviceInfo->defaultHighOutputLatency  );
-
-#ifdef WIN32
-#if PA_USE_ASIO
-/* ASIO specific latency information */
-        if( Pa_GetHostApiInfo( deviceInfo->hostApi )->type == paASIO ){
-            long minLatency, maxLatency, preferredLatency, granularity;
-
-            err = PaAsio_GetAvailableLatencyValues( i,
-                    &minLatency, &maxLatency, &preferredLatency, &granularity );
-
-            printf( "ASIO minimum buffer size    = %ld\n", minLatency  );
-            printf( "ASIO maximum buffer size    = %ld\n", maxLatency  );
-            printf( "ASIO preferred buffer size  = %ld\n", preferredLatency  );
-
-            if( granularity == -1 )
-                printf( "ASIO buffer granularity     = power of 2\n" );
-            else
-                printf( "ASIO buffer granularity     = %ld\n", granularity  );
-        }
-#endif /* PA_USE_ASIO */
-#endif /* WIN32 */
-
-        printf( "Default sample rate         = %8.2f\n", deviceInfo->defaultSampleRate );
-
-    /* poll for standard sample rates */
-        inputParameters.device = i;
-        inputParameters.channelCount = deviceInfo->maxInputChannels;
-        inputParameters.sampleFormat = paInt16;
-        inputParameters.suggestedLatency = 0; /* ignored by Pa_IsFormatSupported() */
-        inputParameters.hostApiSpecificStreamInfo = NULL;
-
-        outputParameters.device = i;
-        outputParameters.channelCount = deviceInfo->maxOutputChannels;
-        outputParameters.sampleFormat = paInt16;
-        outputParameters.suggestedLatency = 0; /* ignored by Pa_IsFormatSupported() */
-        outputParameters.hostApiSpecificStreamInfo = NULL;
-
-        if( inputParameters.channelCount > 0 )
-        {
-            printf("Supported standard sample rates\n for half-duplex 16 bit %d channel input = \n",
-                    inputParameters.channelCount );
-            PrintSupportedStandardSampleRates( &inputParameters, NULL );
-        }
-
-        if( outputParameters.channelCount > 0 )
-        {
-            printf("Supported standard sample rates\n for half-duplex 16 bit %d channel output = \n",
-                    outputParameters.channelCount );
-            PrintSupportedStandardSampleRates( NULL, &outputParameters );
-        }
-
-        if( inputParameters.channelCount > 0 && outputParameters.channelCount > 0 )
-        {
-            printf("Supported standard sample rates\n for full-duplex 16 bit %d channel input, %d channel output = \n",
-                    inputParameters.channelCount, outputParameters.channelCount );
-            PrintSupportedStandardSampleRates( &inputParameters, &outputParameters );
-        }
+    /* -- don't forget to cleanup! -- */
+    err = Pa_CloseStream( stream );
+    if( err != paNoError ) {
+        fprintf(stderr, "Error closing stream: %s\n", Pa_GetErrorText(err));
     }
 
-    Pa_Terminate();
+    goto end;
+xrun:
+    fprintf(stderr, "Fail: %s\n", Pa_GetErrorText(err));
 
-    printf("----------------------------------------------\n");
+end:
+    terminate_pa();
+    return 0;
+}
 
-    getchar();
+enum Mode {
+    MODE_RUN,
+    MODE_LIST,
+    MODE_HELP
+};
+
+int main(int argc, char* argv[]) {
+    PaDeviceIndex inIndex = -1;
+
+    // enum Mode mode = MODE_HELP;
+    // char c;
+    // while ( (c = getopt(argc, argv, "lhri:")) != -1) {
+    //     switch(c) {
+    //         case 'l':
+    //             mode = MODE_LIST;
+    //             break;
+    //         case 'r':
+    //             mode = MODE_RUN;
+    //             break;
+    //         case 'h':
+    //             mode = MODE_HELP;
+    //             break;
+    //         case 'i':
+    //             inIndex = atoi(optarg);
+    //             break;
+    //         default:
+    //             fprintf(stderr, "Unknown argument\n");
+    //             return 0;
+    //     }
+    // }
+
+    vu_meter_init();
+    list();
+    run();
+
     return 0;
 
-error:
-    Pa_Terminate();
-    fprintf( stderr, "Error number: %d\n", err );
-    fprintf( stderr, "Error message: %s\n", Pa_GetErrorText( err ) );
-    return err;
+    // switch(mode) {
+    //     case MODE_LIST:
+    //         return list();
+    //     case MODE_RUN:
+    //         return run();
+    //     case MODE_HELP:
+    //     default:
+    //         usage(argv[0]);
+    //         return 0;
+    // }
 }

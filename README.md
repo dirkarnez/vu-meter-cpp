@@ -9,3 +9,7 @@ From [vu-meter/software/portaudio at master · trygvis/vu-meter](https://github.
 ### TODOs
 - [ ] add cpp version
 - [ ] GUI?
+
+
+### Reference
+- [VU Meter | HISE C++ API](http://hise.audio/hise_api/classhise_1_1_vu_meter.html)
